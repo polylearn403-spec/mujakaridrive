@@ -28,6 +28,7 @@ async function initDb() {
 
 /* ── public API ──────────────────────────────── */
 module.exports = {
+  get supabase() { return supabase; },
   initDb,
 
   /** Return the full DB object equivalent */

@@ -77,7 +77,6 @@ router.post('/:moduleId', upload.array('files', 500), async (req, res) => {
   const { moduleId } = req.params;
   const mod = await db.getModule(moduleId);
   if (!mod) {
-    // clean up uploaded files if module is invalid
     (req.files || []).forEach(f => { try { fs.unlinkSync(f.path); } catch(_) {} });
     return res.status(404).json({ ok: false, error: 'Module not found' });
   }
@@ -88,21 +87,52 @@ router.post('/:moduleId', upload.array('files', 500), async (req, res) => {
 
   const added = [];
   for (const file of req.files) {
-    const relPath = path.join('uploads', moduleId, file.filename);
-    const resource = {
-      id:       uuidv4(),
-      name:     file.originalname,
-      type:     extToType(file.originalname),
-      icon:     extToIcon(file.originalname),
-      size:     formatBytes(file.size),
-      bytes:    file.size,
-      date:     fmtDate(new Date()),
-      source:   'local',
-      note:     null,
-      filePath: relPath.replace(/\\/g, '/'),  // always forward slashes
-    };
-    const saved = await db.addResource(moduleId, resource);
-    added.push(saved);
+    try {
+      // 1. Read file into buffer
+      const fileBuffer = fs.readFileSync(file.path);
+      
+      // 2. Upload to Supabase Storage (mujakaridrive bucket)
+      const storagePath = `public/${moduleId}/${file.filename}`;
+      const { data: uploadData, error: uploadErr } = await db.supabase.storage
+        .from('mujakaridrive')
+        .upload(storagePath, fileBuffer, {
+          contentType: file.mimetype,
+          upsert: true
+        });
+
+      if (uploadErr) {
+        console.error('Upload Error:', uploadErr.message);
+        throw uploadErr;
+      }
+
+      // 3. Get Public URL
+      const { data: urlData } = db.supabase.storage
+        .from('mujakaridrive')
+        .getPublicUrl(storagePath);
+
+      // 4. Clean up local ephemeral file
+      fs.unlinkSync(file.path);
+
+      // 5. Save to DB
+      const resource = {
+        id:       uuidv4(),
+        name:     file.originalname,
+        type:     extToType(file.originalname),
+        icon:     extToIcon(file.originalname),
+        size:     formatBytes(file.size),
+        bytes:    file.size,
+        date:     fmtDate(new Date()),
+        source:   'cloud',
+        note:     null,
+        filePath: urlData.publicUrl, // Save the Supabase URL instead of local path
+      };
+      const saved = await db.addResource(moduleId, resource);
+      added.push(saved);
+    } catch (err) {
+      console.error('File processing error:', err.message);
+      // Clean up local file on error if it exists
+      if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    }
   }
 
   res.status(201).json({ ok: true, added: added.length, resources: added });
@@ -118,14 +148,18 @@ router.get('/:moduleId/:resourceId', async (req, res) => {
   if (!resource) return res.status(404).json({ ok: false, error: 'Resource not found' });
   if (!resource.filePath) return res.status(404).json({ ok: false, error: 'No file attached to this resource' });
 
+  if (resource.filePath.startsWith('http')) {
+    // It's a Supabase Storage URL, just redirect the browser to it
+    return res.redirect(resource.filePath);
+  }
+
+  // Fallback for old local files (if testing locally)
   const fullPath = path.join(__dirname, '..', resource.filePath);
   if (!fs.existsSync(fullPath)) return res.status(404).json({ ok: false, error: 'File missing on server' });
 
   if (req.baseUrl.includes('/view')) {
-    // Send file for inline viewing
     res.sendFile(fullPath);
   } else {
-    // Force download
     res.download(fullPath, resource.name);
   }
 });
