@@ -105,11 +105,8 @@ router.post('/:moduleId', upload.array('files', 500), async (req, res) => {
         throw uploadErr;
       }
 
-      // 3. Get Public URL
-      const { data: urlData } = db.supabase.storage
-        .from('mujakaridrive')
-        .getPublicUrl(storagePath);
-
+      // 3. (No need for public URL since bucket is private, we will use signed URLs)
+      
       // 4. Clean up local ephemeral file
       fs.unlinkSync(file.path);
 
@@ -124,7 +121,7 @@ router.post('/:moduleId', upload.array('files', 500), async (req, res) => {
         date:     fmtDate(new Date()),
         source:   'cloud',
         note:     null,
-        filePath: urlData.publicUrl, // Save the Supabase URL instead of local path
+        filePath: storagePath, // Save the storage path for signed URLs
       };
       const saved = await db.addResource(moduleId, resource);
       added.push(saved);
@@ -148,9 +145,28 @@ router.get('/:moduleId/:resourceId', async (req, res) => {
   if (!resource) return res.status(404).json({ ok: false, error: 'Resource not found' });
   if (!resource.filePath) return res.status(404).json({ ok: false, error: 'No file attached to this resource' });
 
-  if (resource.filePath.startsWith('http')) {
-    // It's a Supabase Storage URL, just redirect the browser to it
-    return res.redirect(resource.filePath);
+  let storagePath = resource.filePath;
+  
+  // Backwards compatibility for old public URLs
+  if (storagePath.startsWith('http')) {
+    const parts = storagePath.split('mujakaridrive/');
+    if (parts.length > 1) {
+      storagePath = parts[1];
+    }
+  }
+
+  if (storagePath.startsWith('public/')) {
+    // Generate a 1-hour signed URL from the private bucket
+    const { data, error } = await db.supabase.storage
+      .from('mujakaridrive')
+      .createSignedUrl(storagePath, 3600);
+
+    if (error || !data) {
+      console.error('Signed URL Error:', error);
+      return res.status(500).json({ ok: false, error: 'Could not generate secure link' });
+    }
+    
+    return res.redirect(data.signedUrl);
   }
 
   // Fallback for old local files (if testing locally)

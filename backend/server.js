@@ -20,6 +20,7 @@ const modulesRouter   = require('./routes/modules');
 const resourcesRouter = require('./routes/resources');
 const uploadRouter    = require('./routes/upload');
 const searchRouter    = require('./routes/search');
+const shareRouter     = require('./routes/share');
 
 const PORT = process.env.PORT || 7070;
 const app  = express();
@@ -47,6 +48,7 @@ app.use('/api/upload',           uploadRouter);
 app.use('/api/download',         uploadRouter);   // download reuses upload router
 app.use('/api/view',             uploadRouter);   // view reuses upload router
 app.use('/api/search',           searchRouter);
+app.use('/api/share',            shareRouter);
 
 /* ── health check ───────────────────────────────── */
 app.get('/api/health', (_req, res) => {
